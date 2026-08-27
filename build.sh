@@ -105,7 +105,7 @@ cat ./src/install.sh.tmpl | envsubst '$TMPL_THEME_DIR_NAME,$TMPL_RESOLUTION' > "
 chmod +x "$build_dir/install.sh"
 
 cp "./THIRD_PARTY_ASSETS.txt" "$build_dir"/THIRD_PARTY_ASSETS.txt
-cp "./LICENSE.txt" "$build_dir"/LICENSE.txt
+cp "./LICENSE" "$build_dir"/LICENSE
 
 cd build
 if [[ -f "$theme_dir_name".zip ]]
