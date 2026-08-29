@@ -1,3 +1,6 @@
 * "Cousine" font by Steve Matteson
 * "Terminus TTF" font by Dimitar Toshkov Zhekov and Tilman Blumenbach
-* "WinTux Dualboot" artwork by ABOhiccups
+* "WinTux Dualboot" artwork by ABOhiccups* "Sway Tree" logo by the Sway project (swaywm/sway, assets/Sway_Tree.svg),
+  released under CC0 1.0 - see src/marks/SWAY_TREE_LICENSE.txt
+* KDE Plasma mark redrawn from Breeze's start-here-kde.svg (KDE, LGPL);
+  the paths are unchanged, only the fills were flattened to white

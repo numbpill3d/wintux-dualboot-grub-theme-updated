@@ -1,0 +1,43 @@
+#! /bin/sh
+# WinTux session chooser.
+#
+# Emits two extra top-level GRUB entries -- "KDE Plasma" and "Sway" -- that boot
+# exactly the same kernel and initramfs as the stock entry but add
+#
+#     systemd.setenv=WINTUX_SESSION=<key>
+#
+# to the kernel command line.  /usr/local/bin/wintux-session-apply reads that
+# back before SDDM starts and preselects the matching desktop session.
+#
+# The entries are produced by running the distribution's own 10_linux with an
+# overridden GRUB_DISTRIBUTOR, so the kernel path, the initrd order, the root
+# UUID and resume= are always exactly what 10_linux would have generated.
+# Nothing here is hand-written, so kernel and initramfs changes need no edits.
+#
+# GRUB_DISTRIBUTOR also decides the entry's first --class, which is how the
+# theme picks its plate: "Plasma" -> --class plasma -> icons/plasma.png.
+set -e
+
+[ -r /etc/grub.d/10_linux ] || exit 0
+[ -x /etc/grub.d/10_linux ] || exit 0
+
+# emit <key> <GRUB_DISTRIBUTOR> <menu title>
+emit() {
+  _key="$1"; _dist="$2"; _title="$3"
+  _out=$(
+    GRUB_DISTRIBUTOR="$_dist" \
+    GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} systemd.setenv=WINTUX_SESSION=${_key}" \
+    /etc/grub.d/10_linux 2>/dev/null
+  ) || return 0
+  [ -n "$_out" ] || return 0
+
+  # Keep only the first (simple, top-level) menuentry block.  10_linux also
+  # emits an "Advanced options" submenu, which the stock entry already covers.
+  printf '%s\n' "$_out" \
+    | awk '/^menuentry /{f=1} f{print} f && /^\}$/{exit}' \
+    | sed -e "1s/^menuentry '[^']*'/menuentry '${_title}'/" \
+          -e "1s/'gnulinux-simple-/'wintux-${_key}-/"
+}
+
+emit plasma Plasma "KDE Plasma"
+emit sway   Sway   "Sway"

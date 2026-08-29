@@ -1,0 +1,94 @@
+#!/bin/bash
+# Preselect a desktop session in SDDM according to the GRUB entry that was
+# booted.
+#
+# /etc/grub.d/09_wintux_sessions adds systemd.setenv=WINTUX_SESSION=<key> to the
+# kernel command line of its session entries.  This script maps that key to a
+# session .desktop file and records it in SDDM's state file as the last-used
+# session, which is what the greeter preselects.  The login prompt itself is
+# untouched -- this only moves the session dropdown.
+#
+# Installed as an ExecStartPre= for sddm.service.  Pass a key as $1 to try it
+# out without rebooting, e.g.  sudo wintux-session-apply sway
+#
+# Always exits 0: nothing here is worth stopping the display manager over.
+set -u
+
+key="${1:-}"
+if [ -z "$key" ] && [ -r /proc/cmdline ]; then
+  for word in $(tr '\0' ' ' < /proc/cmdline); do
+    case "$word" in
+      # what 09_wintux_sessions emits
+      systemd.setenv=WINTUX_SESSION=*) key="${word##*=}" ;;
+      # the bare form, so the choice can also be made by hand from GRUB's
+      # command-line editor (press 'e', append WINTUX_SESSION=sway)
+      WINTUX_SESSION=*)                key="${word#*=}"  ;;
+    esac
+  done
+fi
+[ -n "$key" ] || exit 0
+
+case "$key" in
+  plasma) desktop=plasma.desktop ;;
+  sway)   desktop=sway.desktop   ;;
+  *)      exit 0                 ;;
+esac
+
+# SDDM stores the absolute path of the session file (Session::setTo() resolves
+# it against the configured session directories), so resolve it the same way.
+session=""
+for dir in /usr/local/share/wayland-sessions /usr/share/wayland-sessions \
+           /usr/local/share/xsessions /usr/share/xsessions; do
+  if [ -f "$dir/$desktop" ]; then session="$dir/$desktop"; break; fi
+done
+[ -n "$session" ] || exit 0
+
+home=$(getent passwd sddm | cut -d: -f6)
+state="${home:-/var/lib/sddm}/state.conf"
+[ -d "$(dirname "$state")" ] || exit 0
+
+tmp=$(mktemp "${state}.wintux.XXXXXX") || exit 0
+trap 'rm -f "$tmp"' EXIT
+
+if [ -f "$state" ]; then
+  # Rewrite Session= inside [Last], leaving User= and every other section alone.
+  awk -v s="$session" '
+    /^[[:space:]]*\[/ {
+      if (sect == "Last" && !done) { print "Session=" s; done = 1 }
+      sect = $0
+      sub(/^[[:space:]]*\[/, "", sect); sub(/\][[:space:]]*$/, "", sect)
+      print; next
+    }
+    sect == "Last" && /^[[:space:]]*Session[[:space:]]*=/ {
+      if (!done) { print "Session=" s; done = 1 }
+      next
+    }
+    { print }
+    END {
+      if (!done) {
+        if (sect != "Last") print "[Last]"
+        print "Session=" s
+      }
+    }
+  ' "$state" > "$tmp" || exit 0
+  chown --reference="$state" "$tmp" 2>/dev/null || true
+  chmod --reference="$state" "$tmp" 2>/dev/null || true
+else
+  printf '[Last]\nSession=%s\n' "$session" > "$tmp" || exit 0
+  chown sddm:sddm "$tmp" 2>/dev/null || true
+  chmod 0600 "$tmp" 2>/dev/null || true
+fi
+
+# Never overwrite a good state file with a truncated one: a short write or a
+# full disk would otherwise silently discard [Last] User= and the greeter would
+# forget the remembered username.
+[ -s "$tmp" ] || exit 0
+grep -qxF "Session=$session" "$tmp" || exit 0
+if [ -f "$state" ]; then
+  # the rewrite only ever replaces one line, so it cannot shrink the file
+  [ "$(wc -l < "$tmp")" -ge "$(wc -l < "$state")" ] || exit 0
+fi
+
+mv -f "$tmp" "$state" 2>/dev/null || exit 0
+trap - EXIT
+exit 0
