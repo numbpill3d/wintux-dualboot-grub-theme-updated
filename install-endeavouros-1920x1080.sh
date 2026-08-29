@@ -267,6 +267,8 @@ validate_grub_inputs
 grub-mkconfig -o "$candidate"
 grub-script-check "$candidate"
 grep -q '^menuentry ' "$candidate" || fail "generated configuration has no top-level menu entry"
+# 00_header writes  set theme=($root)<path relative to the root of the
+# filesystem holding it>, so strip the device prefix and compare the tail.
 effective_theme=$(python - "$candidate" <<'PY'
 from pathlib import Path
 import re, sys
@@ -275,10 +277,12 @@ for line in Path(sys.argv[1]).read_text().splitlines():
     match = re.match(r"^\s*set\s+theme=(.*?)\s*$", line)
     if match:
         value = match.group(1).strip().strip("\"'")
+value = re.sub(r"^\([^)]*\)", "", value)
 print(value)
 PY
 )
-[[ $effective_theme == "/boot/grub/themes/win-tux-dualboot-fullscreen/theme.txt" ]] || fail "generated configuration does not select the exact WinTux theme"
+[[ $effective_theme == */grub/themes/win-tux-dualboot-fullscreen/theme.txt ]] || \
+  fail "generated configuration does not select the win-tux-dualboot-fullscreen theme: ${effective_theme:-none}"
 chown root:root "$candidate"
 mv -fT -- "$candidate" "$GRUB_CFG"
 candidate=""
