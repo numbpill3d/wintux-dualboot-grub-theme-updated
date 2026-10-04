@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -e
+set -o errexit -o pipefail
 
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'

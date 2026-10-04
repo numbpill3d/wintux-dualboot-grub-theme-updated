@@ -1,5 +1,7 @@
 #! /usr/bin/env bash
 
+set -o errexit -o pipefail
+
 if [[ $# -ne 2 ]]
 then
   echo "Incorrect number of arguments"
