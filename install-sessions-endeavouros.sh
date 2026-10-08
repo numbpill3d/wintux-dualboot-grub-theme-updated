@@ -1,14 +1,40 @@
 #!/usr/bin/env bash
+# Install the WinTux session chooser on this machine.
+#
+# There is no second operating system on this disk, so the WinTux dual-boot
+# chooser is repurposed as a desktop-session chooser: the GRUB menu offers
+# "KDE Plasma" and "Sway", both booting the same kernel, and SDDM preselects
+# whichever one was picked.
+#
+# This is the guarded, machine-specific path (EndeavourOS, UEFI, GRUB 2.14,
+# 1920x1080, SDDM).  It refuses to run without root and an explicit --apply.
+#
+#   ./build.sh 1920x1080 2.6
+#   sudo ./install-sessions-endeavouros.sh --apply
+#
+# Undo with rollback-sessions-endeavouros.sh --apply
 set -Eeuo pipefail
 readonly PATH=/usr/bin
 export PATH
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly THEME_SOURCE="$SCRIPT_DIR/build/WinTux Dualboot Fullscreen 1920x1080-1x/win-tux-dualboot-fullscreen"
-readonly THEME_DEST="/boot/grub/themes/win-tux-dualboot-fullscreen"
+readonly THEME_SOURCE="$SCRIPT_DIR/build/WinTux Dualboot Fullscreen 1920x1080-2.6x/win-tux-dualboot-fullscreen"
+readonly THEME_DEST="/boot/grub/themes/wintux-sessions"
 readonly DEFAULT_GRUB="/etc/default/grub"
 readonly GRUB_CFG="/boot/grub/grub.cfg"
-readonly BACKUP_ROOT="/var/backups/wintux-grub"
+readonly BACKUP_ROOT="/var/backups/wintux-sessions"
+
+readonly GRUBD_SESSIONS="/etc/grub.d/09_wintux_sessions"
+readonly APPLY_BIN="/usr/local/bin/wintux-session-apply"
+readonly SDDM_DROPIN_DIR="/etc/systemd/system/sddm.service.d"
+readonly SDDM_DROPIN="$SDDM_DROPIN_DIR/10-wintux-session.conf"
+
+# name:destination:mode - the files this installer adds, in backup order
+readonly ADDED_FILES=(
+  "09_wintux_sessions:$GRUBD_SESSIONS:755"
+  "wintux-session-apply:$APPLY_BIN:755"
+  "sddm-dropin.conf:$SDDM_DROPIN:644"
+)
 
 candidate=""
 theme_stage=""
@@ -104,15 +130,30 @@ atomic_install() {
   mv -fT -- "$temporary" "$destination"
 }
 
+# Put back whatever was at each added file's destination before this run.
+restore_added_files() {
+  local entry name destination mode
+  for entry in "${ADDED_FILES[@]}"; do
+    IFS=: read -r name destination mode <<<"$entry"
+    if [[ -f $backup_dir/$name.previous ]]; then
+      atomic_install "$backup_dir/$name.previous" "$destination" "$mode" || true
+    elif [[ -f $backup_dir/$name.absent ]]; then
+      rm -f -- "$destination" || true
+    fi
+  done
+}
+
 restore_after_error() {
   local status=$?
   trap - EXIT INT TERM
   if (( status != 0 && backup_ready == 1 && install_complete == 0 )); then
-    printf 'Install failed; restoring GRUB files from %s\n' "$backup_dir" >&2
+    printf 'Install failed; restoring the previous state from %s\n' "$backup_dir" >&2
     atomic_install "$backup_dir/grub.default" "$DEFAULT_GRUB" 644 || true
     atomic_install "$backup_dir/10_linux" /etc/grub.d/10_linux 755 || true
     atomic_install "$backup_dir/30_uefi-firmware" /etc/grub.d/30_uefi-firmware 755 || true
     atomic_install "$backup_dir/grub.cfg" "$GRUB_CFG" 600 || true
+    restore_added_files
+    systemctl daemon-reload >/dev/null 2>&1 || true
     if [[ -n $theme_hold && -d $theme_hold/original ]]; then
       rm -rf -- "$THEME_DEST"
       mv -- "$theme_hold/original" "$THEME_DEST" || true
@@ -136,26 +177,43 @@ trap 'exit 143' TERM
 [[ ${1:-} == "--apply" ]] || fail "refusing to change GRUB without the --apply flag"
 (( $# == 1 )) || fail "usage: sudo $0 --apply"
 [[ -d /sys/firmware/efi ]] || fail "this machine is not currently booted in UEFI mode"
-[[ -d "$THEME_SOURCE" && -f "$THEME_SOURCE/theme.txt" ]] || fail "built 1920x1080 theme is missing: $THEME_SOURCE"
-for command in grub-mkconfig grub-script-check python flock install mktemp realpath find stat; do
+[[ -d "$THEME_SOURCE" && -f "$THEME_SOURCE/theme.txt" ]] || \
+  fail "built theme is missing, run ./build.sh 1920x1080 2.6 first: $THEME_SOURCE"
+for icon in plasma sway gnu-linux; do
+  [[ -f "$THEME_SOURCE/icons/$icon.png" ]] || fail "built theme has no icons/$icon.png"
+done
+for command in grub-mkconfig grub-script-check python flock install mktemp realpath find stat systemctl getent; do
   command -v "$command" >/dev/null || fail "$command is missing"
 done
 for file in "$DEFAULT_GRUB" /etc/grub.d/10_linux /etc/grub.d/30_uefi-firmware "$GRUB_CFG"; do
   validate_secure_file "$file"
 done
+for source in sessions/09_wintux_sessions sessions/wintux-session-apply sessions/sddm-10-wintux-session.conf; do
+  [[ -f "$SCRIPT_DIR/$source" && ! -L "$SCRIPT_DIR/$source" ]] || fail "missing installer payload: $source"
+done
+
+# The session chooser is only meaningful if SDDM and both sessions are present.
+systemctl list-unit-files sddm.service >/dev/null 2>&1 || fail "sddm.service is not installed"
+[[ -f /usr/share/wayland-sessions/plasma.desktop ]] || fail "plasma.desktop is missing"
+[[ -f /usr/share/wayland-sessions/sway.desktop ]] || fail "sway.desktop is missing"
+getent passwd sddm >/dev/null || fail "the sddm user does not exist"
+
 validate_secure_directory /etc
 validate_secure_directory /etc/default
 validate_secure_directory /etc/grub.d
+validate_secure_directory /etc/systemd/system
 validate_secure_directory /run
 validate_secure_directory /run/lock
 validate_secure_directory /boot
 validate_secure_directory /boot/grub
+validate_secure_directory /usr/local/bin
 validate_grub_inputs
 validate_plain_theme_tree "$THEME_SOURCE"
 
-exec 9>/run/lock/wintux-grub.lock
-flock -n 9 || fail "another WinTux GRUB operation is already running"
+exec 9>/run/lock/wintux-sessions.lock
+flock -n 9 || fail "another WinTux operation is already running"
 prepare_secure_directory /boot/grub/themes 755
+prepare_secure_directory "$SDDM_DROPIN_DIR" 755
 
 validate_secure_directory /var
 prepare_secure_directory /var/backups 755
@@ -168,6 +226,16 @@ cp -a -- "$DEFAULT_GRUB" "$backup_dir/grub.default"
 cp -a -- /etc/grub.d/10_linux "$backup_dir/10_linux"
 cp -a -- /etc/grub.d/30_uefi-firmware "$backup_dir/30_uefi-firmware"
 cp -a -- "$GRUB_CFG" "$backup_dir/grub.cfg"
+for entry in "${ADDED_FILES[@]}"; do
+  IFS=: read -r name destination mode <<<"$entry"
+  if [[ -e $destination || -L $destination ]]; then
+    [[ -f $destination && ! -L $destination ]] || fail "existing path is not a regular file: $destination"
+    cp -a -- "$destination" "$backup_dir/$name.previous"
+  else
+    : > "$backup_dir/$name.absent"
+    chmod 600 "$backup_dir/$name.absent"
+  fi
+done
 backup_ready=1
 latest_tmp=$(mktemp "$BACKUP_ROOT/.LATEST.XXXXXXXX")
 printf '%s\n' "$backup_dir" > "$latest_tmp"
@@ -202,18 +270,22 @@ install -m 644 -o root -g root -- "$DEFAULT_GRUB" "$default_stage"
 install -m 755 -o root -g root -- /etc/grub.d/10_linux "$linux_stage"
 install -m 755 -o root -g root -- /etc/grub.d/30_uefi-firmware "$uefi_stage"
 
+# GRUB_TIMEOUT is deliberately generous: a chooser you cannot see is pointless,
+# and the stock EndeavourOS value here was 1 second.  os-prober is left alone --
+# there is no second OS on this disk.  GRUB_DEFAULT=0 selects the first entry
+# emitted by 09_wintux_sessions, which is KDE Plasma.
 python - "$default_stage" <<'PY'
 from pathlib import Path
 import re, sys
 path = Path(sys.argv[1])
 text = path.read_text()
 settings = {
-    "GRUB_TIMEOUT": "5",
+    "GRUB_DEFAULT": "'0'",
+    "GRUB_TIMEOUT": "10",
     "GRUB_TIMEOUT_STYLE": "menu",
     "GRUB_GFXMODE": '"1920x1080"',
     "GRUB_GFXPAYLOAD_LINUX": "keep",
-    "GRUB_THEME": '"/boot/grub/themes/win-tux-dualboot-fullscreen/theme.txt"',
-    "GRUB_DISABLE_OS_PROBER": "false",
+    "GRUB_THEME": '"/boot/grub/themes/wintux-sessions/theme.txt"',
 }
 for key, value in settings.items():
     pattern = rf"(?m)^\s*#?\s*{re.escape(key)}=.*$"
@@ -223,6 +295,8 @@ text = re.sub(r"(?m)^\s*GRUB_BACKGROUND=", "#GRUB_BACKGROUND=", text)
 path.write_text(text)
 PY
 
+# Give the "Advanced options" submenu and the UEFI firmware entry their own
+# theme plates, exactly as the dual-boot installer does.
 python - "$linux_stage" "$uefi_stage" <<'PY'
 from pathlib import Path
 import sys
@@ -261,12 +335,21 @@ linux_stage=""
 mv -fT -- "$uefi_stage" /etc/grub.d/30_uefi-firmware
 uefi_stage=""
 
+atomic_install "$SCRIPT_DIR/sessions/09_wintux_sessions" "$GRUBD_SESSIONS" 755
+atomic_install "$SCRIPT_DIR/sessions/wintux-session-apply" "$APPLY_BIN" 755
+atomic_install "$SCRIPT_DIR/sessions/sddm-10-wintux-session.conf" "$SDDM_DROPIN" 644
+systemctl daemon-reload
+
 candidate=$(mktemp /boot/grub/.wintux-grub.cfg.XXXXXXXX)
 chmod 600 "$candidate"
 validate_grub_inputs
 grub-mkconfig -o "$candidate"
 grub-script-check "$candidate"
 grep -q '^menuentry ' "$candidate" || fail "generated configuration has no top-level menu entry"
+grep -q "^menuentry 'KDE Plasma' --class plasma " "$candidate" || fail "generated configuration has no KDE Plasma entry"
+grep -q "^menuentry 'Sway' --class sway " "$candidate" || fail "generated configuration has no Sway entry"
+grep -q 'systemd.setenv=WINTUX_SESSION=plasma' "$candidate" || fail "the KDE Plasma entry does not carry its session marker"
+grep -q 'systemd.setenv=WINTUX_SESSION=sway' "$candidate" || fail "the Sway entry does not carry its session marker"
 # 00_header writes  set theme=($root)<path relative to the root of the
 # filesystem holding it>, so strip the device prefix and compare the tail.
 effective_theme=$(python - "$candidate" <<'PY'
@@ -281,8 +364,8 @@ value = re.sub(r"^\([^)]*\)", "", value)
 print(value)
 PY
 )
-[[ $effective_theme == */grub/themes/win-tux-dualboot-fullscreen/theme.txt ]] || \
-  fail "generated configuration does not select the win-tux-dualboot-fullscreen theme: ${effective_theme:-none}"
+[[ $effective_theme == */grub/themes/wintux-sessions/theme.txt ]] || \
+  fail "generated configuration does not select the wintux-sessions theme: ${effective_theme:-none}"
 chown root:root "$candidate"
 mv -fT -- "$candidate" "$GRUB_CFG"
 candidate=""
@@ -291,6 +374,7 @@ install_complete=1
 [[ -n $theme_hold ]] && rm -rf -- "$theme_hold"
 theme_hold=""
 trap - EXIT INT TERM
-printf 'WinTux GRUB theme installed successfully.\n'
+printf 'WinTux session chooser installed successfully.\n'
 printf 'Backup: %s\n' "$backup_dir"
+printf 'Menu order: KDE Plasma, Sway, EndeavourOS (stock), Advanced options, UEFI firmware.\n'
 printf 'Reboot was NOT performed.\n'

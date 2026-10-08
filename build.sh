@@ -90,6 +90,19 @@ magick "./src/image_templates/efi.png" $CONVERT_PARAMS "$icons_dir/efi.png"
 magick "./src/image_templates/power.png" $CONVERT_PARAMS "$icons_dir/shutdown.png"
 magick "./src/image_templates/power.png" $CONVERT_PARAMS "$icons_dir/restart.png"
 
+# Session-choice plates.  On a single-OS machine the dual-boot chooser is more
+# useful as a desktop-session chooser, so build a plate for each session that
+# /etc/grub.d/09_wintux_sessions offers.  The GRUB entries carry --class plasma
+# and --class sway, which is how the theme picks these up.
+if [[ -x ./src/build-session-plates.sh ]]
+then
+  session_plates_dir="$build_dir/.session_plates"
+  ./src/build-session-plates.sh "$session_plates_dir"
+  magick "$session_plates_dir/plasma.png" $CONVERT_PARAMS "$icons_dir/plasma.png"
+  magick "$session_plates_dir/sway.png" $CONVERT_PARAMS "$icons_dir/sway.png"
+  rm -rf "$session_plates_dir"
+fi
+
 TMPL_WIDTH=$resolution_w
 TMPL_HEIGHT=$resolution_h
 TMPL_FONT_SIZE=$FONT_SIZE
